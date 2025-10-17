@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Survey Says! Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght+400;700;900&display=swap" rel="stylesheet">
+    <style>
+        /* Custom styles to enhance the game show look */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1a202c; /* Dark background */
+            color: white;
+            min-height: 100vh;
+        }
+        .feud-card {
+            background-color: #2d3748; /* Darker blue/grey for panels */
+            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.5);
+            border: 4px solid #f6e05e; /* Gold border */
+            border-radius: 1rem;
+        }
+        .question-box {
+            background-color: #4c51bf; /* Deep purple/blue */
+            border-bottom: 4px solid #f6ad55; /* Orange accent */
+        }
+        .answer-slot {
+            height: 56px;
+            background-color: #1a202c; /* Dark background for unrevealed slots */
+            border: 2px solid #a0aec0;
+            transition: all 0.3s ease;
+            cursor: default;
+        }
+        .revealed {
+            background-color: #f6e05e; /* Yellow/Gold for revealed answer */
+            color: #1a202c;
+            border: 2px solid #d69e2e;
+            font-weight: 900;
+        }
+        .strike-x {
+            color: #e53e3e; /* Red for strikes */
+            font-weight: 900;
+            font-size: 3rem;
+            animation: bounceIn 0.5s;
+        }
+        @keyframes bounceIn {
+            0% { transform: scale(0.3); opacity: 0; }
+            50% { transform: scale(1.1); opacity: 1; }
+            100% { transform: scale(1); }
+        }
+    </style>
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- GLOBAL VARIABLES (Mandatory Canvas Environment Variables) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-game-app';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db = null;
+        let auth = null;
+        let userId = null;
+        let authReady = false;
+
+        // --- FIREBASE INITIALIZATION ---
+        window.initFirebase = async () => {
+            if (!firebaseConfig) {
+                console.error("Firebase config not found. Running without persistence.");
+                return;
+            }
+
+            try {
+                // setLogLevel('debug'); // Uncomment for debugging
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        authReady = true;
+                        console.log("Authenticated user:", userId);
+                        await window.loadHighScore();
+                    } else {
+                        // Attempt silent authentication
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            // Fallback to anonymous sign-in
+                            await signInAnonymously(auth);
+                        }
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error initializing Firebase:", error);
+                // Fallback to random ID if authentication completely fails
+                userId = crypto.randomUUID();
+                authReady = true;
+            }
+        };
+
+        // --- FIREBASE DATA OPERATIONS ---
+
+        // Get the private document path for high score
+        const getHighScorePath = () => {
+            if (userId) {
+                return doc(db, `/artifacts/${appId}/users/${userId}/game_data/high_score`);
+            }
+            return null;
+        };
+
+        window.loadHighScore = async () => {
+            if (!authReady || !db || !userId) return;
+
+            const path = getHighScorePath();
+            if (!path) return;
+
+            try {
+                const docSnap = await getDoc(path);
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    window.highScore = data.score || 0;
+                } else {
+                    window.highScore = 0;
+                }
+                document.getElementById('high-score').textContent = window.highScore;
+            } catch (e) {
+                console.error("Error loading high score: ", e);
+            }
+        };
+
+        window.saveHighScore = async (newScore) => {
+            if (!authReady || !db || !userId) return;
+
+            // Only save if the new score is greater than the current high score
+            if (newScore > window.highScore) {
+                const path = getHighScorePath();
+                if (!path) return;
+
+                try {
+                    await setDoc(path, { score: newScore, userId: userId });
+                    window.highScore = newScore;
+                    document.getElementById('high-score').textContent = window.highScore;
+                    console.log("High score saved successfully:", newScore);
+                } catch (e) {
+                    console.error("Error saving high score: ", e);
+                }
+            }
+        };
+
+        window.initFirebase();
+    </script>
+</head>
+<body class="p-4 md:p-8 flex flex-col items-center justify-center min-h-screen">
+
+    <div id="game-container" class="w-full max-w-4xl">
+        <h1 class="text-4xl md:text-5xl font-extrabold text-yellow-400 mb-6 text-center shadow-lg uppercase tracking-wider">
+            Survey Says!
+        </h1>
+
+        <!-- Scoreboard and Strikes -->
+        <div class="flex justify-between items-center mb-6 p-4 feud-card">
+            <div>
+                <span class="text-xl font-bold">Round: </span>
+                <span id="current-round" class="text-3xl text-yellow-400 font-extrabold">1</span> of <span id="max-rounds">5</span>
+            </div>
+            <div class="text-center">
+                <div class="text-xl font-bold">Total Score</div>
+                <div id="total-score" class="text-4xl text-green-400 font-extrabold">0</div>
+            </div>
+            <div class="text-right">
+                <div class="text-xl font-bold mb-1">Strikes</div>
+                <div id="strike-area" class="flex space-x-2">
+                    <div class="w-8 h-8 flex items-center justify-center text-gray-700 border-2 border-gray-600 rounded-full text-lg font-bold"></div>
+                    <div class="w-8 h-8 flex items-center justify-center text-gray-700 border-2 border-gray-600 rounded-full text-lg font-bold"></div>
+                    <div class="w-8 h-8 flex items-center justify-center text-gray-700 border-2 border-gray-600 rounded-full text-lg font-bold"></div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- High Score and User ID -->
+        <div class="flex justify-between text-sm mb-4 text-gray-400">
+            <p>High Score: <span id="high-score" class="font-bold text-yellow-400">0</span></p>
+            <p>User ID: <span id="user-id">Loading...</span></p>
+        </div>
+
+        <!-- Question Box -->
+        <div id="question-box" class="question-box p-6 mb-8 rounded-lg text-center">
+            <h2 id="question-text" class="text-2xl md:text-3xl font-bold uppercase text-white"></h2>
+        </div>
+
+        <!-- Answer Board -->
+        <div id="answer-board" class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+            <!-- Answer slots will be dynamically generated here -->
+        </div>
+
+        <!-- Input and Control -->
+        <div id="input-area" class="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4">
+            <input type="text" id="guess-input" placeholder="Type your guess here..." class="flex-grow p-3 rounded-lg bg-gray-700 text-white border-2 border-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-500" disabled>
+            <button id="submit-button" class="px-6 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition duration-150 disabled:opacity-50" disabled>
+                SURVEY!
+            </button>
+            <button id="next-button" class="hidden px-6 py-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition duration-150">
+                Next Round
+            </button>
+            <!-- New Gemini API Button for Dynamic Question Generation -->
+            <button id="generate-button" class="px-6 py-3 bg-purple-600 text-white font-bold rounded-lg hover:bg-purple-700 transition duration-150 disabled:opacity-50 flex items-center justify-center">
+                <span id="generate-text">✨ New AI Question</span>
+                <span id="generate-spinner" class="hidden ml-2 h-5 w-5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+            </button>
+        </div>
+        
+        <!-- Message Box/Modal -->
+        <div id="message-modal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4" onclick="document.getElementById('message-modal').classList.add('hidden');">
+            <div class="feud-card p-8 text-center max-w-md w-full" onclick="event.stopPropagation()">
+                <h3 id="modal-title" class="text-3xl font-extrabold text-yellow-400 mb-4"></h3>
+                <p id="modal-body" class="text-xl text-white mb-6"></p>
+                <button onclick="document.getElementById('message-modal').classList.add('hidden');" class="px-8 py-3 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700">
+                    Got It!
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- GEMINI API CONFIGURATION ---
+        const API_KEY = ""; // Provided by the environment
+        const API_URL_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent';
+        const MAX_RETRIES = 3;
+        const DEFAULT_BACKOFF_MS = 1000;
+
+
+        // --- GAME DATA (Hardcoded questions and answers - dynamically added questions will be prepended) ---
+        // Format: [Question, Answer 1, Pts 1, Answer 2, Pts 2, Answer 3, Pts 3, Answer 4, Pts 4, Answer 5, Pts 5, Answer 6, Pts 6]
+        const GAME_DATA = [
+            // 1. AI Chatbots: "Tools that answer questions, write, or chat with users."
+            ["What are the potential harms and benefits of AI Chatbots, tools that answer questions, write, or chat with users.", "Faster info access", 45, "Misinformation", 30, "24/7 help", 25, "Overreliance", 25, "Privacy risks", 20, "Writing help", 15],
+            // 2. AI Art Generators: "Create images from text prompts using AI."
+            ["What are the potential harms and benefits of AI Art Generators, which create images from text prompts using AI.", "Easy art creation", 40, "Hurts artists", 35, "Creative ideas", 25, "Deepfakes", 25, "Copyright issues", 20, "Cheap design", 15],
+            // 3. Facial Recognition: "Identifies people by analyzing facial features."
+            ["What are the potential harms and benefits of Facial Recognition, which identifies people by analyzing facial features.", "Privacy loss", 40, "Security & safety", 35, "Fast login", 25, "Misidentification", 25, "Gov’t tracking", 20, "Find missing people", 15],
+            // 4. Self-Driving Cars: "Vehicles that drive themselves using sensors and AI."
+            ["What are the potential harms and benefits of Self-Driving Cars, vehicles that drive themselves using sensors and AI.", "Fewer crashes", 40, "Hacking risk", 30, "Convenience", 25, "Job loss", 25, "Accidents/Safety", 20, "Accessibility", 15], 
+            // 5. AI in Healthcare: (Description created based on context)
+            ["What are the potential harms and benefits of AI in Healthcare, which uses algorithms to assist with diagnosis and treatment.", "Better diagnosis", 45, "Misdiagnosis", 40, "Drug discovery", 30, "High cost", 25, "Personalized medicine", 20, "Privacy risk", 20]
+        ];
+
+        // --- FUZZY MATCHING DICTIONARY (Used for lenient answer checking) ---
+        const FUZZY_MATCH_MAP = {
+            "misinformation": ["disinformation", "hallucinations", "fabrications", "incorrect information", "false info", "fake news"],
+            "privacy risks": ["data privacy", "privacy loss", "data misuse", "data leaks", "security risk", "surveillance"],
+            "job loss": ["unemployment", "automation", "fewer jobs", "work replaced"],
+            "overreliance": ["dependency", "too much trust", "trust issues"],
+            "faster info access": ["quick answers", "speedy information", "rapid access"],
+            "24/7 help": ["always available", "constant support", "round the clock"],
+            "writing help": ["text generation", "essay help", "drafting"],
+            "easy art creation": ["simple art", "quick images", "create visuals"],
+            "misidentification": ["wrong person", "false match", "inaccurate id"],
+            "gov t tracking": ["government surveillance", "state tracking", "mass surveillance"],
+            "security safety": ["better security", "crime fighting", "public safety", "less crime"],
+            "fewer crashes": ["less accidents", "safer roads", "crash reduction"],
+            "hacking risk": ["cyber attack", "malware", "virus"],
+            "accidents safety": ["more crashes", "danger"],
+            "better diagnosis": ["accurate diagnosis", "improved detection", "finding diseases"],
+            "misdiagnosis": ["wrong diagnosis", "incorrect results"],
+            "drug discovery": ["new medicines", "finding cures", "research acceleration"],
+            "hurts artists": ["replaces artists", "artist replacement", "less jobs for artists"],
+            "copyright issues": ["stolen art", "stolen designs", "plagiarism"]
+        };
+
+
+        // --- GAME STATE ---
+        let state = {
+            totalScore: 0,
+            strikes: 0,
+            currentQuestion: null,
+            answers: [], // Array of objects: {answer: '...', points: 0, revealed: false, normalized: '...'}
+            roundsPlayed: 0
+        };
+
+        const MAX_ROUNDS = 5;
+        const MAX_STRIKES = 3;
+
+        // --- DOM ELEMENTS ---
+        const $questionText = document.getElementById('question-text');
+        const $answerBoard = document.getElementById('answer-board');
+        const $totalScore = document.getElementById('total-score');
+        const $currentRound = document.getElementById('current-round');
+        const $maxRounds = document.getElementById('max-rounds');
+        const $strikeArea = document.getElementById('strike-area');
+        const $guessInput = document.getElementById('guess-input');
+        const $submitButton = document.getElementById('submit-button');
+        const $nextButton = document.getElementById('next-button');
+        const $generateButton = document.getElementById('generate-button');
+        const $generateText = document.getElementById('generate-text');
+        const $generateSpinner = document.getElementById('generate-spinner');
+        const $messageModal = document.getElementById('message-modal');
+        const $modalTitle = document.getElementById('modal-title');
+        const $modalBody = document.getElementById('modal-body');
+
+        // --- GEMINI API HELPERS ---
+
+        /**
+         * Generic fetch with exponential backoff for API robustness.
+         */
+        async function fetchWithRetry(url, options, retries = 0) {
+            try {
+                const response = await fetch(url, options);
+                if (response.status === 429 && retries < MAX_RETRIES) {
+                    const delay = DEFAULT_BACKOFF_MS * Math.pow(2, retries) + Math.random() * 500;
+                    console.warn(`Rate limit hit (429). Retrying in ${Math.round(delay)}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    return fetchWithRetry(url, options, retries + 1);
+                }
+                if (!response.ok) {
+                    const errorBody = await response.text();
+                    throw new Error(`API call failed with status ${response.status}: ${errorBody}`);
+                }
+                return response.json();
+            } catch (error) {
+                if (retries < MAX_RETRIES) {
+                    const delay = DEFAULT_BACKOFF_MS * Math.pow(2, retries) + Math.random() * 500;
+                    console.error(`Fetch error. Retrying in ${Math.round(delay)}ms...`, error.message);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    return fetchWithRetry(url, options, retries + 1);
+                }
+                throw new Error(`Fetch failed after ${MAX_RETRIES} attempts: ${error.message}`);
+            }
+        }
+
+        /**
+         * Parses the structured JSON from the LLM and formats it for GAME_DATA.
+         * @param {string} jsonText The raw JSON string from the API response.
+         * @returns {Array<string|number>} An array formatted like [Question, Answer1, Pts1, ...]
+         */
+        function normalizeQuestionData(jsonText) {
+            try {
+                const data = JSON.parse(jsonText);
+                if (!data.question || !Array.isArray(data.answers)) {
+                    throw new Error("Invalid structure returned from LLM.");
+                }
+
+                const newGameEntry = [data.question];
+                for (const item of data.answers) {
+                    if (item.answer && typeof item.points === 'number') {
+                        newGameEntry.push(item.answer);
+                        newGameEntry.push(item.points);
+                    }
+                }
+                // Ensure we have at least 5 answers for a good round
+                if (newGameEntry.length < 11) {
+                     throw new Error(`LLM did not return enough answers: ${newGameEntry.length - 1} found.`);
+                }
+                return newGameEntry;
+            } catch (e) {
+                console.error("Failed to parse or validate LLM response:", e);
+                return null;
+            }
+        }
+
+        /**
+         * Calls the Gemini API to generate a new Survey Says question and answers.
+         */
+        async function generateNewQuestion() {
+            // Disable buttons and show spinner
+            $generateButton.disabled = true;
+            $generateText.textContent = 'Generating...';
+            $generateSpinner.classList.remove('hidden');
+
+            const apiUrl = `${API_URL_BASE}?key=${API_KEY}`;
+            const userQuery = `Generate a new "Survey Says" question and the top 6 corresponding survey answers based on a common concept related to Artificial Intelligence, Technology, or the Future. The question should be suitable for a game show. The total points for all 6 answers should be between 100 and 250.`;
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: {
+                    parts: [{ text: "You are a fun, witty game show host and data aggregator. You must generate the question and answers in the requested JSON format only." }]
+                },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            "question": { "type": "STRING", "description": "The main question for the survey." },
+                            "answers": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "answer": { "type": "STRING", "description": "A single, concise survey answer (e.g., 'Smartphones')." },
+                                        "points": { "type": "INTEGER", "description": "The point value (survey popularity) for this answer. Must be a whole number." }
+                                    },
+                                    "propertyOrdering": ["answer", "points"]
+                                },
+                                "description": "A list of exactly 6 top survey answers and their points."
+                            }
+                        },
+                        "propertyOrdering": ["question", "answers"]
+                    }
+                }
+            };
+
+            try {
+                const result = await fetchWithRetry(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const json = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                const newGameEntry = normalizeQuestionData(json);
+
+                if (newGameEntry) {
+                    // Prepend the new question to the game data array
+                    GAME_DATA.unshift(newGameEntry);
+                    // Reset round tracker to 0, which will make startGame use the new question
+                    state.roundsPlayed = 0;
+                    startGame();
+                    showMessage("New Question Generated!", "A fresh, AI-powered question has been added to the board. Ready to play!", "Let's Go!");
+                } else {
+                    showMessage("Generation Error", "The AI couldn't generate a valid question. Please try again.", "Close");
+                }
+
+            } catch (error) {
+                console.error("Gemini API Error:", error);
+                showMessage("API Failed", `Could not generate new content: ${error.message.substring(0, 100)}`, "Close");
+            } finally {
+                // Re-enable buttons and hide spinner
+                $generateButton.disabled = false;
+                $generateText.textContent = '✨ New AI Question';
+                $generateSpinner.classList.add('hidden');
+            }
+        }
+
+        // --- HELPER FUNCTIONS ---
+
+        /**
+         * Normalizes a string for fuzzy comparison (case-insensitive, removes common articles and punctuation).
+         */
+        function normalize(text) {
+            if (!text) return "";
+            return text.toLowerCase()
+                       .replace(/\b(a|an|the|and|or)\b/g, '') // Remove common articles/conjunctions
+                       .replace(/[^a-z0-9\s]/g, '') // Remove most punctuation
+                       .trim()
+                       .replace(/\s+/g, ' '); // Collapse multiple spaces
+        }
+
+        /**
+         * Checks if the guess is a "reasonably close" match to the answer.
+         */
+        function isMatch(answerNorm, guessNorm) {
+            if (!guessNorm.length) return false;
+
+            // 1. Direct Match (substring check)
+            if (answerNorm.includes(guessNorm) || guessNorm.includes(answerNorm)) {
+                return true;
+            }
+            
+            // 2. Fuzzy/Synonym Match Check (using hardcoded map)
+            if (FUZZY_MATCH_MAP[answerNorm]) {
+                const synonyms = FUZZY_MATCH_MAP[answerNorm].map(normalize);
+                for (const synonym of synonyms) {
+                    if (synonym.includes(guessNorm) || guessNorm.includes(synonym)) {
+                        return true;
+                    }
+                }
+            }
+            
+            return false;
+        }
+
+
+        /**
+         * Initializes the game state.
+         */
+        function initGame() {
+            state.totalScore = 0;
+            state.roundsPlayed = 0;
+            $guessInput.focus();
+            
+            document.getElementById('user-id').textContent = window.userId || 'ID not available';
+            $maxRounds.textContent = MAX_ROUNDS;
+            
+            // Start Firebase setup
+            if (typeof window.initFirebase === 'function') {
+                window.initFirebase().then(() => {
+                    startGame();
+                });
+            } else {
+                console.warn("Firebase initialization skipped or failed to load.");
+                window.highScore = 0;
+                document.getElementById('high-score').textContent = 0;
+                startGame();
+            }
+        }
+        
+        /**
+         * Displays a simple modal message.
+         */
+        function showMessage(title, body, buttonText = "Got It!") {
+            $modalTitle.textContent = title;
+            $modalBody.textContent = body;
+            $messageModal.querySelector('button').textContent = buttonText;
+            $messageModal.classList.remove('hidden');
+        }
+
+
+        /**
+         * Starts a new round.
+         */
+        function startGame() {
+            // Check if we ran out of hardcoded questions plus any generated ones
+            if (state.roundsPlayed >= GAME_DATA.length) {
+                // If we run out, force a game end, or prompt to generate more questions
+                endGame();
+                return;
+            }
+            state.roundsPlayed++;
+            state.strikes = 0;
+
+            // Pick the next question sequentially from the array
+            const questionIndex = (state.roundsPlayed - 1);
+            state.currentQuestion = GAME_DATA[questionIndex];
+
+            // Parse the data into a usable array of objects
+            state.answers = [];
+            for (let i = 1; i < state.currentQuestion.length; i += 2) {
+                const answerText = state.currentQuestion[i];
+                const points = state.currentQuestion[i + 1];
+                state.answers.push({
+                    answer: answerText,
+                    points: points,
+                    revealed: false,
+                    normalized: normalize(answerText)
+                });
+            }
+            
+            // Update the MAX_ROUNDS display to reflect the total number of available questions
+            $maxRounds.textContent = GAME_DATA.length;
+
+            updateUI(true);
+        }
+
+        /**
+         * Processes the player's guess.
+         */
+        function processGuess() {
+            const rawGuess = $guessInput.value.trim();
+            $guessInput.value = ''; // Clear input immediately
+            if (!rawGuess) return;
+
+            const normalizedGuess = normalize(rawGuess);
+            let matchFound = false;
+
+            // Check if the guess matches any unrevealed answer
+            for (let i = 0; i < state.answers.length; i++) {
+                const item = state.answers[i];
+                if (!item.revealed) {
+                    
+                    if (isMatch(item.normalized, normalizedGuess)) {
+                        state.answers[i].revealed = true;
+                        state.totalScore += item.points;
+                        matchFound = true;
+                        break;
+                    }
+
+                }
+            }
+
+            if (matchFound) {
+                updateUI();
+                // Check for round win
+                if (state.answers.every(a => a.revealed)) {
+                    endRound(true);
+                }
+            } else {
+                // Strike!
+                state.strikes++;
+                // Add the visual strike marker with animation
+                document.getElementById('strike-area').children[state.strikes - 1].innerHTML = '<div class="strike-x text-5xl">X</div>';
+                
+                showMessage("Strike!", "Sorry, that wasn't on the board.", "Try Again!");
+
+                // Check for round loss
+                if (state.strikes >= MAX_STRIKES) {
+                    endRound(false);
+                }
+                updateUI();
+            }
+        }
+
+        /**
+         * Handles the end of a round.
+         */
+        function endRound(won) {
+            $guessInput.disabled = true;
+            $submitButton.classList.add('hidden');
+            $nextButton.classList.remove('hidden');
+
+            const nextActionText = state.roundsPlayed < GAME_DATA.length ? "Next Round" : "End Game";
+
+            if (won) {
+                showMessage("Round Won!", `Congratulations! You cleared the board and scored ${state.answers.reduce((sum, a) => sum + a.points, 0)} points this round.`, nextActionText);
+            } else {
+                // If round is lost, reveal all remaining answers
+                state.answers.forEach(a => a.revealed = true);
+                updateUI();
+                showMessage("Round Over!", "Three strikes! The remaining answers are now revealed.", nextActionText);
+            }
+            
+            $nextButton.onclick = () => {
+                document.getElementById('message-modal').classList.add('hidden');
+                startGame();
+            };
+        }
+
+        /**
+         * Handles the end of the entire game.
+         */
+        function endGame() {
+            $guessInput.disabled = true;
+            $submitButton.disabled = true;
+            $submitButton.classList.add('hidden');
+            $nextButton.classList.add('hidden');
+
+            const finalMessage = `The game is over! Your final score is ${state.totalScore}.`;
+            showMessage("Game Over!", finalMessage + ` Your score will be saved if it's a new high score.`, "See Final Score");
+            
+            if (typeof window.saveHighScore === 'function') {
+                window.saveHighScore(state.totalScore);
+            }
+        }
+
+        /**
+         * Updates the game interface (question, answers, scores, strikes).
+         */
+        function updateUI(isNewRound = false) {
+            $totalScore.textContent = state.totalScore;
+            $currentRound.textContent = state.roundsPlayed;
+            $questionText.textContent = state.currentQuestion ? state.currentQuestion[0].toUpperCase() : "Loading Question...";
+            $guessInput.disabled = false;
+            $submitButton.disabled = false;
+            $submitButton.classList.remove('hidden');
+            $nextButton.classList.add('hidden');
+
+
+            // 1. Update Strikes
+            for (let i = 0; i < MAX_STRIKES; i++) {
+                const strikeEl = $strikeArea.children[i];
+                if (i < state.strikes) {
+                    strikeEl.innerHTML = '<div class="strike-x text-5xl">X</div>';
+                } else {
+                    strikeEl.innerHTML = '';
+                    strikeEl.classList.remove('strike-x', 'text-5xl');
+                }
+            }
+
+            // 2. Update Answer Board
+            $answerBoard.innerHTML = '';
+            state.answers.forEach((item, index) => {
+                const slot = document.createElement('div');
+                slot.className = `answer-slot feud-card p-2 rounded-lg flex justify-between items-center text-xl md:text-2xl font-bold transition duration-300 ${item.revealed ? 'revealed' : ''}`;
+                
+                // Left side: Slot number or Answer text
+                const leftContent = document.createElement('span');
+                leftContent.className = 'flex-none w-1/12 md:w-1/12 text-center';
+                if (item.revealed) {
+                    leftContent.textContent = (index + 1) + '.';
+                    leftContent.className = 'text-gray-700 font-extrabold';
+                } else {
+                    leftContent.textContent = (index + 1) + '.';
+                    leftContent.className = 'text-yellow-400 font-extrabold';
+                }
+                slot.appendChild(leftContent);
+
+                // Middle: Answer text
+                const answerContent = document.createElement('span');
+                answerContent.className = 'flex-grow px-2 truncate';
+                answerContent.textContent = item.revealed ? item.answer.toUpperCase() : '';
+                slot.appendChild(answerContent);
+
+                // Right side: Points
+                const pointContent = document.createElement('span');
+                pointContent.className = 'flex-none w-3/12 md:w-2/12 text-right font-extrabold';
+                pointContent.textContent = item.revealed ? item.points : '';
+                pointContent.style.color = item.revealed ? '#1a202c' : '#f6e05e';
+                slot.appendChild(pointContent);
+
+                $answerBoard.appendChild(slot);
+            });
+
+            // If it's a new round, ensure the next button is hidden
+            if (isNewRound) {
+                 $nextButton.classList.add('hidden');
+            }
+        }
+
+        // --- EVENT LISTENERS ---
+        $submitButton.addEventListener('click', processGuess);
+        $guessInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                processGuess();
+            }
+        });
+        $generateButton.addEventListener('click', generateNewQuestion);
+        
+        // --- START GAME ---
+        window.onload = initGame;
+    </script>
+</body>
+</html>
